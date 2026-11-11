@@ -19,6 +19,8 @@ This is an PWA app, available on mobile and desktop, for reading ebooks in epub 
 - Menu and position are hide-able by clicking. Click on hold on position to show menu, which includes `goto` option.
 
 - On mobile, you can enable `Mobile view` in `Look and Feel` menu, it removes frame, and hides top and bottom label.
+  
+- To add app to phone start screen, in Firefox: go to three dots menu, then `More`, then `Add app to home screen`
 
 ![screen01](screenshots/screen01.png)
 
