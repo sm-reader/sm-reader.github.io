@@ -6,7 +6,7 @@ v 2026-11-11-11-10-04
 
 Mirror of old MS (Microsoft) book reader, with white page on black background
 
-This is an PWA app, available on mobile and desktop, for reading ebooks in epub format. You can find them on https://www.gutenberg.org/ and https://standardebooks.org/ .
+This is an PWA app, available on mobile and desktop, for reading ebooks in epub format. You can find them on https://www.gutenberg.org/ and https://standardebooks.org/ and many other sites.
 
 - To install PWA point your browser to https://sm-reader.github.io , and wait for "Install complete" message at the bottom. You can use the app offline afterwards, just recall that bookmark location.
 
