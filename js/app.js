@@ -1,5 +1,5 @@
 // SM Reader - app.js
-// last modified (utc): 2026-11-11-09-19-54
+// last modified (utc): 2026-11-11-09-46-37
 // instructions: on modify, update string.
 import './foliate-js/view.js'
 
@@ -2337,8 +2337,9 @@ function buildGotoMenu() {
   addItem('Furthest read', async () => {
     if (FLAGS.SWITCH_SAVE_LOCATION_AS_CFI !== true && furthestCharIndex != null && bookTotalChars) {
       try {
-        const target = await getRangeForCharIndex(Math.min(Math.max(0, furthestCharIndex | 0), Math.max(0, bookTotalChars - 1)))
-        if (target) { await view.renderer.goTo(target).catch(() => {}); showReaderView(); return }
+        const charIdx = Math.min(Math.max(0, furthestCharIndex | 0), Math.max(0, bookTotalChars - 1))
+        await jumpToCharacterAndMark(charIdx)
+        showReaderView(); return
       } catch {}
     }
     await view.goToFraction(furthestFraction); showReaderView()
@@ -2463,10 +2464,7 @@ function gotoFromText(val, dry = false) {
     const f = Math.min(1, Math.max(0, frac))
     if (FLAGS.SWITCH_SAVE_LOCATION_AS_CFI !== true && bookTotalChars) {
       const charIdx = Math.min(Math.max(0, Math.round(f * bookTotalChars)), Math.max(0, bookTotalChars - 1))
-      getRangeForCharIndex(charIdx).then(target => {
-        if (target) view.renderer.goTo(target).catch(() => {})
-        else view.goToFraction(f).catch(() => {})
-      }).catch(() => {})
+      jumpToCharacterAndMark(charIdx).catch(() => {})
     } else {
       view.goToFraction(f).catch(() => {})
     }
@@ -2484,10 +2482,7 @@ function gotoFromText(val, dry = false) {
     if (!bookTotalChars) return false
     if (dry) return true
     const clamped = Math.min(Math.max(0, idx), Math.max(0, bookTotalChars - 1))
-    getRangeForCharIndex(clamped).then(target => {
-      if (target) view.renderer.goTo(target).catch(() => {})
-      else view.goToFraction(clamped / bookTotalChars).catch(() => {})
-    }).catch(() => {})
+    jumpToCharacterAndMark(clamped).catch(() => {})
     return true
   }
   const num = parseFloat(raw.replace(',', '.'))
@@ -2649,14 +2644,16 @@ function flashFirstRowOnRestore() {
     firstRowFlashTimer = setTimeout(clearFirstRowFlash, Math.min(30000, ms))
   } catch {}
 }
-// saved-char-mark (2026-09-29-08-27-26): tints the saved char (through the end
-// of its word, at most 12 code units) after a restore, until the next page
+// saved-char-mark: tints the word containing the target after a restore or jump,
+// until the next page
 // turn or jump. CSS Custom Highlight API: registry entry on the book iframe's
 // window, no DOM change, so no reflow and no split text nodes. The rule
 // `::highlight(sm-saved-char)` lives in getCSS().
 const SAVED_MARK_NAME = 'sm-saved-char'
 let savedCharMark = null // { win }
+let savedMarkGeneration = 0
 function clearSavedCharMark() {
+  savedMarkGeneration++
   try {
     const m = savedCharMark
     savedCharMark = null
@@ -2690,14 +2687,16 @@ function nextNonBlankTextNode(doc, node) {
   }
   return null
 }
-async function markSavedCharAfterRestore(charIdx, gen) {
+async function markSavedCharAfterRestore(charIdx, gen, expectedMarkGeneration = null) {
+  if (expectedMarkGeneration !== null && expectedMarkGeneration !== savedMarkGeneration) return
   clearSavedCharMark()
+  const markGeneration = savedMarkGeneration
   if (FLAGS.SWITCH_MARK_SAVED_CHAR_UNTIL_NEXT_PAGE_TURN !== true) return
   if (charIdx == null || !view) return
   const report = extra => debugBeacon('saved-mark', { charIdx, ...extra })
   try {
     const target = await getRangeForCharIndex(charIdx)
-    if (!target || gen !== restoreGeneration) return
+    if (!target || gen !== restoreGeneration || markGeneration !== savedMarkGeneration) return
     const contents = view.renderer.getContents() ?? []
     const live = (contents.find(c => c.index === target.index) ?? contents[0])?.doc
     const win = live?.defaultView
@@ -2727,12 +2726,30 @@ async function markSavedCharAfterRestore(charIdx, gen) {
         r.setStart(tNode, from)
         via = 'next-node'
       }
-      let end = from
-      const max = Math.min(str.length, from + 12)
-      while (end < max && !/\s/.test(str[end])) end++
-      if (end === from) end = Math.min(str.length, from + 1)
-      if (end <= from) { report({ outcome: 'empty', via }); return }
-      r.setEnd(tNode, end)
+      // Join text across inline markup within the same text block.
+      const block = tNode.parentElement?.closest('p,li,blockquote,dd,dt,h1,h2,h3,h4,h5,h6,div') ?? tNode.parentElement
+      const walker = live.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) {
+          const p = n.parentElement
+          if (!p || p.closest('script,style,template,[hidden]')) return NodeFilter.FILTER_REJECT
+          return (p.closest('p,li,blockquote,dd,dt,h1,h2,h3,h4,h5,h6,div') ?? p) === block ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+        }
+      })
+      const nodes = []
+      let text = '', targetOffset = -1, n
+      while ((n = walker.nextNode())) {
+        if (n === tNode) targetOffset = text.length + from
+        nodes.push({ node: n, start: text.length })
+        text += n.nodeValue ?? ''
+      }
+      if (targetOffset < 0) { report({ outcome: 'no-word', via }); return }
+      let start = targetOffset, end = targetOffset + 1
+      if (isWordCh(text[targetOffset])) [start, end] = growWord(text, start, end)
+      const first = nodes.findLast(part => part.start <= start)
+      const last = nodes.findLast(part => part.start < end)
+      if (!first || !last) { report({ outcome: 'empty', via }); return }
+      r.setStart(first.node, start - first.start)
+      r.setEnd(last.node, end - last.start)
     } else if (r.collapsed) { report({ outcome: 'collapsed-element' }); return }
     const hl = new win.Highlight(r)
     try { hl.priority = 1 } catch {} // above bookmark highlights
@@ -2740,6 +2757,25 @@ async function markSavedCharAfterRestore(charIdx, gen) {
     savedCharMark = { win }
     report({ outcome: 'marked', via })
   } catch (e) { report({ outcome: 'threw', reason: String(e?.message ?? e).slice(0, 80) }) }
+}
+// Navigate to a character and mark it once the destination is ready.
+async function jumpToCharacterAndMark(charIdx) {
+  const jumpView = view
+  const generation = ++restoreGeneration
+  clearTimeout(resizeSettleTimer)
+  clearTimeout(isResizingOffTimer)
+  isResizing = false
+  const before = savedMarkGeneration
+  await waitForPaginatorSizeStable(generation)
+  if (view !== jumpView || generation !== restoreGeneration || before !== savedMarkGeneration) return false
+  const target = await getRangeForCharIndex(charIdx)
+  if (!target || view !== jumpView || generation !== restoreGeneration || before !== savedMarkGeneration) return false
+  isResizing = false
+  try { await jumpView.renderer.goTo(target) } catch { return false }
+  if (view !== jumpView || generation !== restoreGeneration) return false
+  const markGeneration = savedMarkGeneration
+  await markSavedCharAfterRestore(charIdx, generation, markGeneration)
+  return true
 }
 // search-stable-goto (2026-09-27-13-39-03): search jumps go through the same
 // settle path as restores. Fresh-open layout (fonts/images reflowing) used to
@@ -4923,8 +4959,12 @@ function renderBookmarksView() {
 }
 async function jumpToBookmark(b) {
   try {
-    const target = await getRangeForCharIndex(Math.min(Math.max(0, b.start | 0), Math.max(0, bookTotalChars - 1)))
-    if (target) await view.renderer.goTo(target).catch(() => {})
+    const charIdx = Math.min(Math.max(0, b.start | 0), Math.max(0, bookTotalChars - 1))
+    if (b.type === 'page') await jumpToCharacterAndMark(charIdx)
+    else {
+      const target = await getRangeForCharIndex(charIdx)
+      if (target) await view.renderer.goTo(target).catch(() => {})
+    }
   } catch {}
   showReaderView()
 }
@@ -5846,7 +5886,7 @@ async function initInstallToast() {
    the Reload button (a plain reload, not "Load fresh app"). A first install is not an update (the page had no controller),
    and neither is a worker added after the user removed the offline copy in this session. A check for a newer worker is made
    when the app becomes visible again, at most once an hour. */
-const APP_VERSION = '2026-11-11-09-19-54'
+const APP_VERSION = '2026-11-11-09-46-37'
 let appUpdateReady = false, appUpdateCheckedAt = 0, swTouched = false
 function renderAppUpdate() {
   $('#app-update-row')?.classList.toggle('hidden', !appUpdateReady)
