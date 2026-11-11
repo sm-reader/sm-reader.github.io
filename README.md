@@ -6,7 +6,7 @@ v 2026-11-11-11-10-04
 
 Mirror of old MS (Microsoft) book reader, with white page on black background
 
-Mobile and desktop.
+This is an PWA app, available on mobile and desktop.
 
 - To install PWA point your browser to https://sm-reader.github.io , and wait for "Install complete" message at the bottom. You can use the app offline afterwards, just recall that bookmark location.
 
